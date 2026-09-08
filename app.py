@@ -82,7 +82,6 @@ logger = logging.getLogger(__name__)
 # instead of the deprecated @app.on_event("startup"/"shutdown") decorators.
 app = FastAPI(
     title="AI Chat Application",
-    root_path=URL_PREFIX,
     description="Comprehensive AI chat with memory, research, and multi-modal capabilities",
     version="1.0.0",
 )
@@ -190,6 +189,8 @@ if AUTH_ENABLED:
     ]
 
     def _is_auth_exempt(path: str) -> bool:
+        if URL_PREFIX and path.startswith(URL_PREFIX):
+            path = path[len(URL_PREFIX):] or "/"
         if path in AUTH_EXEMPT_EXACT:
             return True
         if any(path.startswith(p) for p in AUTH_EXEMPT_PREFIXES):
@@ -758,6 +759,12 @@ def _serve_html_with_nonce(request: Request, file_path: str) -> HTMLResponse:
         html = html.replace('"/static/', f'"{prefix}/static/')
         html = html.replace('href="/login"', f'href="{prefix}/login"')
         html = html.replace('href="/logout"', f'href="{prefix}/logout"')
+        html = html.replace("window.location.replace('/')", f"window.location.replace('{prefix}/')")
+        html = html.replace('window.location.replace("/")', f'window.location.replace("{prefix}/")')
+        html = html.replace("location.replace('/')", f"location.replace('{prefix}/')")
+        html = html.replace('location.replace("/")', f'location.replace("{prefix}/")')
+        html = html.replace("window.location.href = '/login'", f"window.location.href = '{prefix}/login'")
+        html = html.replace('window.location.href = "/login"', f'window.location.href = "{prefix}/login"')
 
         bootstrap = f"""
   <base href="{prefix}/">
@@ -769,14 +776,16 @@ def _serve_html_with_nonce(request: Request, file_path: str) -> HTMLResponse:
     if (origFetch) {{
       window.fetch = function(input, init) {{
         if (typeof input === 'string') {{
-          if (input.startsWith('/api/') || input.startsWith('/static/') || input.startsWith('/login') || input.startsWith('/logout')) {{
+          if (input.startsWith('/api/') || input.startsWith('/static/') || input.startsWith('/login') || input.startsWith('/logout') || input.startsWith('/ws/')) {{
             input = p + input;
+          }} else if (input.startsWith(window.location.origin + '/api/') || input.startsWith(window.location.origin + '/static/') || input.startsWith(window.location.origin + '/login') || input.startsWith(window.location.origin + '/logout') || input.startsWith(window.location.origin + '/ws/')) {{
+            input = input.replace(window.location.origin, window.location.origin + p);
           }}
         }} else if (input && input.url) {{
           try {{
             var u = new URL(input.url, window.location.origin);
-            if (u.origin === window.location.origin && (u.pathname.startsWith('/api/') || u.pathname.startsWith('/static/'))) {{
-              input = new Request(p + u.pathname + u.search, input);
+            if (u.origin === window.location.origin && (u.pathname.startsWith('/api/') || u.pathname.startsWith('/static/') || u.pathname.startsWith('/login') || u.pathname.startsWith('/logout') || u.pathname.startsWith('/ws/'))) {{
+              input = new Request(u.origin + p + u.pathname + u.search, input);
             }}
           }} catch(e) {{}}
         }}
@@ -786,8 +795,12 @@ def _serve_html_with_nonce(request: Request, file_path: str) -> HTMLResponse:
     var OrigEventSource = window.EventSource;
     if (OrigEventSource) {{
       window.EventSource = function(url, config) {{
-        if (typeof url === 'string' && (url.startsWith('/api/') || url.startsWith('/static/'))) {{
-          url = p + url;
+        if (typeof url === 'string') {{
+          if (url.startsWith('/api/') || url.startsWith('/static/')) {{
+            url = p + url;
+          }} else if (url.startsWith(window.location.origin + '/api/') || url.startsWith(window.location.origin + '/static/')) {{
+            url = url.replace(window.location.origin, window.location.origin + p);
+          }}
         }}
         return new OrigEventSource(url, config);
       }};
@@ -795,8 +808,17 @@ def _serve_html_with_nonce(request: Request, file_path: str) -> HTMLResponse:
     var OrigWebSocket = window.WebSocket;
     if (OrigWebSocket) {{
       window.WebSocket = function(url, protocols) {{
-        if (typeof url === 'string' && (url.startsWith('/ws/') || url.startsWith('/api/'))) {{
-          url = p + url;
+        if (typeof url === 'string') {{
+          if (url.startsWith('/ws/') || url.startsWith('/api/')) {{
+            url = p + url;
+          }} else {{
+            try {{
+              var u = new URL(url);
+              if (u.host === window.location.host && (u.pathname.startsWith('/ws/') || u.pathname.startsWith('/api/'))) {{
+                url = u.protocol + '//' + u.host + p + u.pathname + u.search;
+              }}
+            }} catch(e) {{}}
+          }}
         }}
         return new OrigWebSocket(url, protocols);
       }};
