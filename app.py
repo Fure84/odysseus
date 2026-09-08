@@ -35,6 +35,8 @@ from dotenv import load_dotenv
 # utf-8-sig reads plain UTF-8 (no BOM) identically, so this is safe everywhere.
 load_dotenv(encoding="utf-8-sig")
 
+URL_PREFIX = os.getenv("URL_PREFIX", "").rstrip("/")
+
 import asyncio
 import logging
 import secrets
@@ -80,6 +82,7 @@ logger = logging.getLogger(__name__)
 # instead of the deprecated @app.on_event("startup"/"shutdown") decorators.
 app = FastAPI(
     title="AI Chat Application",
+    root_path=URL_PREFIX,
     description="Comprehensive AI chat with memory, research, and multi-modal capabilities",
     version="1.0.0",
 )
@@ -296,7 +299,7 @@ if AUTH_ENABLED:
             if not auth_manager.is_configured:
                 # No users yet — redirect to login for first-time setup
                 if not path.startswith("/api/"):
-                    return RedirectResponse(url="/login", status_code=302)
+                    return RedirectResponse(url=(f"{URL_PREFIX}/login" if URL_PREFIX else "/login"), status_code=302)
                 return JSONResponse(status_code=401, content={"error": "Setup required"})
 
             # --- Bearer token auth (API tokens for external integrations) ---
@@ -359,7 +362,7 @@ if AUTH_ENABLED:
             if not auth_manager.validate_token(token):
                 if path.startswith("/api/"):
                     return JSONResponse(status_code=401, content={"error": "Not authenticated"})
-                return RedirectResponse(url="/login", status_code=302)
+                return RedirectResponse(url=(f"{URL_PREFIX}/login" if URL_PREFIX else "/login"), status_code=302)
 
             # Attach current username to request state for downstream routes
             request.state.current_user = auth_manager.get_username_for_token(token)
@@ -392,6 +395,8 @@ class _RevalidatingStatic(StaticFiles):
 
 
 app.mount("/static", _RevalidatingStatic(directory="static"), name="static")
+if URL_PREFIX:
+    app.mount(f"{URL_PREFIX}/static", _RevalidatingStatic(directory="static"), name="odysseus_static")
 
 # ========= GENERATED IMAGES =========
 @app.get("/api/generated-image/{filename}")
@@ -738,11 +743,73 @@ app.include_router(setup_companion_routes())
 # ========= ROUTES (kept in app.py) =========
 
 def _serve_html_with_nonce(request: Request, file_path: str) -> HTMLResponse:
-    """Read an HTML file and inject the CSP nonce into inline <script> tags."""
+    """Read an HTML file, inject CSP nonce, and adjust URL prefixes for subpath hosting."""
     with open(file_path, "r", encoding="utf-8") as f:
         html = f.read()
     nonce = getattr(request.state, "csp_nonce", "")
     html = html.replace("{{CSP_NONCE}}", nonce)
+
+    prefix = URL_PREFIX or os.getenv("URL_PREFIX", "").rstrip("/")
+    if prefix:
+        html = html.replace("{{URL_PREFIX}}", prefix)
+        html = html.replace('href="/static/', f'href="{prefix}/static/')
+        html = html.replace('src="/static/', f'src="{prefix}/static/')
+        html = html.replace("'/static/", f"'{prefix}/static/")
+        html = html.replace('"/static/', f'"{prefix}/static/')
+        html = html.replace('href="/login"', f'href="{prefix}/login"')
+        html = html.replace('href="/logout"', f'href="{prefix}/logout"')
+
+        bootstrap = f"""
+  <base href="{prefix}/">
+  <script nonce="{nonce}">
+  (function() {{
+    var p = '{prefix}';
+    window.ODYSSEUS_BASE_PATH = p;
+    var origFetch = window.fetch;
+    if (origFetch) {{
+      window.fetch = function(input, init) {{
+        if (typeof input === 'string') {{
+          if (input.startsWith('/api/') || input.startsWith('/static/') || input.startsWith('/login') || input.startsWith('/logout')) {{
+            input = p + input;
+          }}
+        }} else if (input && input.url) {{
+          try {{
+            var u = new URL(input.url, window.location.origin);
+            if (u.origin === window.location.origin && (u.pathname.startsWith('/api/') || u.pathname.startsWith('/static/'))) {{
+              input = new Request(p + u.pathname + u.search, input);
+            }}
+          }} catch(e) {{}}
+        }}
+        return origFetch.call(this, input, init);
+      }};
+    }}
+    var OrigEventSource = window.EventSource;
+    if (OrigEventSource) {{
+      window.EventSource = function(url, config) {{
+        if (typeof url === 'string' && (url.startsWith('/api/') || url.startsWith('/static/'))) {{
+          url = p + url;
+        }}
+        return new OrigEventSource(url, config);
+      }};
+    }}
+    var OrigWebSocket = window.WebSocket;
+    if (OrigWebSocket) {{
+      window.WebSocket = function(url, protocols) {{
+        if (typeof url === 'string' && (url.startsWith('/ws/') || url.startsWith('/api/'))) {{
+          url = p + url;
+        }}
+        return new OrigWebSocket(url, protocols);
+      }};
+    }}
+  }})();
+  </script>
+"""
+        if "</head>" in html:
+            html = html.replace("</head>", bootstrap + "\n</head>", 1)
+        elif "</HEAD>" in html:
+            html = html.replace("</HEAD>", bootstrap + "\n</HEAD>", 1)
+    else:
+        html = html.replace("{{URL_PREFIX}}", "")
     return HTMLResponse(html)
 
 @app.get("/")
@@ -799,7 +866,7 @@ async def serve_backgrounds(request: Request):
 @app.get("/login")
 async def serve_login(request: Request):
     if not AUTH_ENABLED:
-        return RedirectResponse(url="/", status_code=302)
+        return RedirectResponse(url=(f"{URL_PREFIX}/" if URL_PREFIX else "/"), status_code=302)
     return _serve_html_with_nonce(request, abs_join(BASE_DIR, "static/login.html"))
 
 @app.get("/api/version")

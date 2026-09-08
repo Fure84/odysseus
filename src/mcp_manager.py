@@ -189,19 +189,48 @@ class McpManager:
                 env={**os.environ, **env} if env else None,
             )
 
-            stack = AsyncExitStack()
-            try:
-                transport = await stack.enter_async_context(stdio_client(server_params))
-                read_stream, write_stream = transport
-                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            import asyncio
+            ready_event = asyncio.Event()
+            result_container = []
 
-                await session.initialize()
+            async def _run():
+                stack = AsyncExitStack()
+                try:
+                    transport = await stack.enter_async_context(stdio_client(server_params))
+                    read_stream, write_stream = transport
+                    session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
-                # Discover tools
-                tools_result = await session.list_tools()
-            except Exception:
-                await stack.aclose()
-                raise
+                    await session.initialize()
+
+                    # Discover tools
+                    tools_result = await session.list_tools()
+                    
+                    result_container.append((stack, session, tools_result))
+                    ready_event.set()
+
+                    try:
+                        await asyncio.Future()
+                    except asyncio.CancelledError:
+                        pass
+                except Exception as e:
+                    if not ready_event.is_set():
+                        result_container.append(e)
+                        ready_event.set()
+                    else:
+                        logger.error(f"MCP server {server_id} task failed: {e}")
+                finally:
+                    try:
+                        await stack.aclose()
+                    except Exception as e:
+                        logger.warning(f"Error closing MCP server {server_id}: {e}")
+
+            task = asyncio.create_task(_run())
+            await ready_event.wait()
+            res = result_container[0]
+            if isinstance(res, Exception):
+                raise res
+
+            stack, session, tools_result = res
             tools = []
             for tool in tools_result.tools:
                 tools.append({
@@ -215,7 +244,7 @@ class McpManager:
                 })
 
             self._sessions[server_id] = session
-            self._stacks[server_id] = stack
+            self._stacks[server_id] = task
             self._tools[server_id] = tools
             # Extract identity hints from env vars (e.g. email address, API name)
             # so tool descriptions can distinguish between multiple instances of
@@ -250,19 +279,48 @@ class McpManager:
             from mcp.client.sse import sse_client
             from contextlib import AsyncExitStack
 
-            stack = AsyncExitStack()
-            try:
-                transport = await stack.enter_async_context(sse_client(url))
-                read_stream, write_stream = transport
-                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            import asyncio
+            ready_event = asyncio.Event()
+            result_container = []
 
-                await session.initialize()
+            async def _run():
+                stack = AsyncExitStack()
+                try:
+                    transport = await stack.enter_async_context(sse_client(url))
+                    read_stream, write_stream = transport
+                    session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
-                # Discover tools
-                tools_result = await session.list_tools()
-            except Exception:
-                await stack.aclose()
-                raise
+                    await session.initialize()
+
+                    # Discover tools
+                    tools_result = await session.list_tools()
+                    
+                    result_container.append((stack, session, tools_result))
+                    ready_event.set()
+
+                    try:
+                        await asyncio.Future()
+                    except asyncio.CancelledError:
+                        pass
+                except Exception as e:
+                    if not ready_event.is_set():
+                        result_container.append(e)
+                        ready_event.set()
+                    else:
+                        logger.error(f"MCP server {server_id} task failed: {e}")
+                finally:
+                    try:
+                        await stack.aclose()
+                    except Exception as e:
+                        logger.warning(f"Error closing MCP server {server_id}: {e}")
+
+            task = asyncio.create_task(_run())
+            await ready_event.wait()
+            res = result_container[0]
+            if isinstance(res, Exception):
+                raise res
+
+            stack, session, tools_result = res
             tools = []
             for tool in tools_result.tools:
                 tools.append({
@@ -276,7 +334,7 @@ class McpManager:
                 })
 
             self._sessions[server_id] = session
-            self._stacks[server_id] = stack
+            self._stacks[server_id] = task
             self._tools[server_id] = tools
             self._connections[server_id] = {
                 "status": "connected",
@@ -337,13 +395,46 @@ class McpManager:
                 }
 
             provider = build_provider(server_id, url, on_redirect=_on_redirect)
-            stack = AsyncExitStack()
-            transport = await stack.enter_async_context(streamablehttp_client(url, auth=provider))
-            read_stream, write_stream, _get_session_id = transport
-            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
+            import asyncio
+            ready_event = asyncio.Event()
+            result_container = []
 
-            tools_result = await session.list_tools()
+            async def _run():
+                stack = AsyncExitStack()
+                try:
+                    transport = await stack.enter_async_context(streamablehttp_client(url, auth=provider))
+                    read_stream, write_stream, _get_session_id = transport
+                    session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+                    await session.initialize()
+
+                    tools_result = await session.list_tools()
+                    
+                    result_container.append((stack, session, tools_result))
+                    ready_event.set()
+
+                    try:
+                        await asyncio.Future()
+                    except asyncio.CancelledError:
+                        pass
+                except Exception as e:
+                    if not ready_event.is_set():
+                        result_container.append(e)
+                        ready_event.set()
+                    else:
+                        logger.error(f"HTTP MCP server {server_id} task failed: {e}")
+                finally:
+                    try:
+                        await stack.aclose()
+                    except Exception as e:
+                        logger.warning(f"Error closing HTTP MCP server {server_id}: {e}")
+
+            task = asyncio.create_task(_run())
+            await ready_event.wait()
+            res = result_container[0]
+            if isinstance(res, Exception):
+                raise res
+
+            stack, session, tools_result = res
             tools = []
             for tool in tools_result.tools:
                 tools.append({
@@ -353,7 +444,7 @@ class McpManager:
                 })
 
             self._sessions[server_id] = session
-            self._stacks[server_id] = stack
+            self._stacks[server_id] = task
             self._tools[server_id] = tools
             self._connections[server_id] = {
                 "status": "connected", "name": name, "transport": "http",
@@ -390,10 +481,13 @@ class McpManager:
 
         stack = self._stacks.pop(server_id, None)
         if stack:
-            try:
-                await stack.aclose()
-            except Exception as e:
-                logger.warning(f"Error closing MCP server {server_id}: {e}")
+            if hasattr(stack, "cancel"):
+                stack.cancel()
+            else:
+                try:
+                    await stack.aclose()
+                except Exception as e:
+                    logger.warning(f"Error closing MCP server {server_id}: {e}")
 
         self._sessions.pop(server_id, None)
         self._tools.pop(server_id, None)
